@@ -10,11 +10,14 @@
 #ifdef DAI_WITH_BP
 
 
-#include <iostream>
-#include <sstream>
-#include <map>
-#include <set>
 #include <algorithm>
+#include <cmath>
+#include <iostream>
+#include <map>
+#include <queue>
+#include <set>
+#include <sstream>
+
 #include <dai/bp.h>
 #include <dai/util.h>
 #include <dai/properties.h>
@@ -262,6 +265,214 @@ void BP::calcNewMessage( size_t i, size_t _I ) {
 
 // BP::run does not check for NANs for performance reasons
 // Somehow NaNs do not often occur in BP...
+double BP::run(double tolerance, size_t minIters, size_t maxIters, size_t histLength) {
+    assert(0 < tolerance);
+    assert(0 < histLength && histLength < minIters && minIters < maxIters);
+    clog << __LOGSTR__ << "Starting " << identify()
+                       << "...  tolerance: " << tolerance
+                       << ". minIters: " << minIters
+                       << ". maxIters: " << maxIters
+                       << ". histLength: " << histLength << "." << endl;
+
+    double tic = toc();
+
+    size_t numIters = 0;
+    Real maxDiff = INFINITY;
+    double yetToConvergeFraction = 1.0;
+    double nodeFracTolerance = 0.0;
+    vector<queue<double>> beliefHist(nrVars());
+
+    enum class RunReturnReason { ALL_CONVERGED, BIG_FRAC_CONVERGED, DIVERGED };
+    RunReturnReason returnReason = RunReturnReason::DIVERGED;
+
+    for (; true; numIters++, _iters++) {
+        if (numIters >= minIters) {
+            nodeFracTolerance = static_cast<double>(numIters - minIters) / (maxIters - minIters);
+        }
+
+        if (maxDiff <= tolerance) {
+            returnReason = RunReturnReason::ALL_CONVERGED;
+            break;
+        } else if (numIters > minIters && yetToConvergeFraction < nodeFracTolerance) {
+            returnReason = RunReturnReason::BIG_FRAC_CONVERGED;
+            break;
+        } else if (numIters > maxIters) {
+            returnReason = RunReturnReason::DIVERGED;
+            break;
+        }
+
+        if( props.updates == Properties::UpdateType::SEQMAX ) {
+            if( _iters == 0 ) {
+                // do the first pass
+                for( size_t i = 0; i < nrVars(); ++i )
+                  bforeach( const Neighbor &I, nbV(i) )
+                      calcNewMessage( i, I.iter );
+            }
+            // Maximum-Residual BP [\ref EMK06]
+            for( size_t t = 0; t < _updateSeq.size(); ++t ) {
+                // update the message with the largest residual
+                size_t i, _I;
+                findMaxResidual( i, _I );
+                updateMessage( i, _I );
+
+                // I->i has been updated, which means that residuals for all
+                // J->j with J in nb[i]\I and j in nb[J]\i have to be updated
+                bforeach( const Neighbor &J, nbV(i) ) {
+                    if( J.iter != _I ) {
+                        bforeach( const Neighbor &j, nbF(J) ) {
+                            size_t _J = j.dual;
+                            if( j != i )
+                                calcNewMessage( j, _J );
+                        }
+                    }
+                }
+            }
+        } else if( props.updates == Properties::UpdateType::PARALL ) {
+            // Parallel updates
+            for( size_t i = 0; i < nrVars(); ++i )
+                bforeach( const Neighbor &I, nbV(i) )
+                    calcNewMessage( i, I.iter );
+
+            for( size_t i = 0; i < nrVars(); ++i )
+                bforeach( const Neighbor &I, nbV(i) )
+                    updateMessage( i, I.iter );
+        } else if (props.updates == Properties::UpdateType::SEQRNDPAR) {
+            // Sequential updates
+            random_shuffle(_updateSeq.begin(), _updateSeq.end(), rnd);
+
+            #pragma omp parallel for
+            for (auto it = _updateSeq.begin(); it < _updateSeq.end(); it++) {
+                const Edge& e = *it;
+                calcNewMessage( e.first, e.second );
+                updateMessage( e.first, e.second );
+            }
+        } else {
+            // Sequential updates
+            if( props.updates == Properties::UpdateType::SEQRND )
+                random_shuffle( _updateSeq.begin(), _updateSeq.end(), rnd );
+
+            bforeach( const Edge &e, _updateSeq ) {
+                calcNewMessage( e.first, e.second );
+                updateMessage( e.first, e.second );
+            }
+        }
+
+        // calculate new beliefs and compare with old ones
+        maxDiff = -INFINITY;
+        map<int, size_t> diffHistogram;
+        const int minBucketIndex = -1;
+        int maxBucketIndex = 0;
+        size_t nonConvergedElems = 0;
+
+        for( size_t i = 0; i < nrVars(); ++i ) {
+            Factor b( beliefV(i) );
+            Real iDist = dist( b, _oldBeliefsV[i], DISTLINF );
+            maxDiff = std::max( maxDiff, iDist );
+            if (iDist > tolerance) {
+                nonConvergedElems++;
+            }
+
+            if (iDist == 0) {
+                diffHistogram[minBucketIndex]++;
+            } else {
+                int bucketIndex = std::max(static_cast<int>(ceil(log2(iDist) - log2(props.tol))), minBucketIndex);
+                diffHistogram[bucketIndex]++;
+                maxBucketIndex = std::max(maxBucketIndex, bucketIndex);
+            }
+            _oldBeliefsV[i] = b;
+
+            auto newBelief = beliefV(i).get(1);
+            auto newBeliefType = fpclassify(newBelief);
+            if (newBeliefType == FP_NORMAL || newBeliefType == FP_SUBNORMAL || newBeliefType == FP_ZERO) {
+                beliefHist[i].push(newBelief);
+            }
+            if (beliefHist[i].size() > histLength) {
+                beliefHist[i].pop();
+            }
+        }
+        for( size_t I = 0; I < nrFactors(); ++I ) {
+            Factor b( beliefF(I) );
+            Real iDist = dist( b, _oldBeliefsF[I], DISTLINF );
+            maxDiff = std::max( maxDiff, iDist );
+            if (iDist > tolerance) {
+                nonConvergedElems++;
+            }
+
+            if (iDist == 0) {
+                diffHistogram[minBucketIndex]++;
+            } else {
+                int bucketIndex = std::max(static_cast<int>(ceil(log2(iDist) - log2(props.tol))), minBucketIndex);
+                diffHistogram[bucketIndex]++;
+                maxBucketIndex = std::max(maxBucketIndex, bucketIndex);
+            }
+            _oldBeliefsF[I] = b;
+        }
+
+        yetToConvergeFraction = static_cast<double>(nonConvergedElems) / (nrVars() + nrFactors());
+
+        clog << __LOGSTR__ << name() << "::run():  maxdiff: " << maxDiff
+                                     << ". numIters: " << numIters
+                                     << ". Time elapsed: " << toc() - tic << " seconds. "
+                                     << "yetToConvergeFraction: " << yetToConvergeFraction << "." << endl;
+        clog << __LOGSTR__ << "diffHistogram: ";
+        for (int i = minBucketIndex; i <= maxBucketIndex; i++) {
+            if (diffHistogram[i] > 0) {
+                clog << "(" << i << ": " << diffHistogram[i] << ")";
+                if (i < maxBucketIndex) {
+                    clog << " ";
+                }
+            }
+        }
+        clog << endl;
+    }
+
+    if( maxDiff > _maxdiff )
+        _maxdiff = maxDiff;
+
+    switch (returnReason) {
+    case RunReturnReason::ALL_CONVERGED:
+        _lowPassBeliefs = vector<Real>(nrVars());
+        for (size_t i = 0; i < nrVars(); i++) {
+            _lowPassBeliefs[i] = beliefV(i).get(1);
+        }
+        break;
+    case RunReturnReason::BIG_FRAC_CONVERGED:
+    case RunReturnReason::DIVERGED:
+        _lowPassBeliefs = vector<Real>(nrVars());
+        for (size_t i = 0; i < nrVars(); i++) {
+            assert(beliefHist[i].size() <= histLength);
+            size_t denom = beliefHist[i].size();
+            while (!beliefHist[i].empty()) {
+                _lowPassBeliefs[i] += beliefHist[i].front();
+                beliefHist[i].pop();
+            }
+            if (denom > 0) { _lowPassBeliefs[i] /= denom; }
+        }
+        break;
+    }
+
+    switch (returnReason) {
+    case RunReturnReason::ALL_CONVERGED:
+        clog << __LOGSTR__ << name() << "::run:  converged in " << numIters << " passes and "
+                           << toc() - tic << " seconds. Final maxdiff: " << maxDiff << endl;
+        break;
+    case RunReturnReason::BIG_FRAC_CONVERGED:
+        clog << __LOGSTR__ << name() << "::run:  Sufficiently big fraction " << yetToConvergeFraction
+                                     << " of variables appeared to converge in " << numIters << " passes and "
+                                     << toc() - tic << " seconds. Final maxDiff: " << maxDiff << endl;
+        break;
+    case RunReturnReason::DIVERGED:
+        clog << __LOGSTR__ << name() << "::run:  WARNING: not converged after " << numIters << " passes and "
+                           << toc() - tic << " seconds. Final maxdiff: " << maxDiff << endl;
+        break;
+    }
+
+    return yetToConvergeFraction;
+}
+
+
+// BP::run does not check for NANs for performance reasons
+// Somehow NaNs do not often occur in BP...
 Real BP::run() {
     if( props.verbose >= 1 )
         cerr << "Starting " << identify() << "...";
@@ -309,6 +520,16 @@ Real BP::run() {
             for( size_t i = 0; i < nrVars(); ++i )
                 bforeach( const Neighbor &I, nbV(i) )
                     updateMessage( i, I.iter );
+        } else if (props.updates == Properties::UpdateType::SEQRNDPAR) {
+            // Sequential updates
+            random_shuffle(_updateSeq.begin(), _updateSeq.end(), rnd);
+
+            #pragma omp parallel for
+            for (auto it = _updateSeq.begin(); it < _updateSeq.end(); it++) {
+                const Edge& e = *it;
+                calcNewMessage( e.first, e.second );
+                updateMessage( e.first, e.second );
+            }
         } else {
             // Sequential updates
             if( props.updates == Properties::UpdateType::SEQRND )
@@ -342,13 +563,15 @@ Real BP::run() {
 
     if( props.verbose >= 1 ) {
         if( maxDiff > props.tol ) {
-            if( props.verbose == 1 )
+            if( props.verbose == 1 ) {
                 cerr << endl;
                 cerr << name() << "::run:  WARNING: not converged after " << _iters << " passes (" << toc() - tic << " seconds)...final maxdiff:" << maxDiff << endl;
+            }
         } else {
-            if( props.verbose >= 3 )
+            if( props.verbose >= 3 ) {
                 cerr << name() << "::run:  ";
                 cerr << "converged in " << _iters << " passes (" << toc() - tic << " seconds)." << endl;
+            }
         }
     }
 

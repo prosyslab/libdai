@@ -19,6 +19,7 @@
 #ifdef DAI_WITH_BP
 
 
+#include <set>
 #include <string>
 #include <dai/daialg.h>
 #include <dai/factorgraph.h>
@@ -96,6 +97,8 @@ class BP : public DAIAlgFG {
         /// Stores the update schedule
         std::vector<Edge> _updateSeq;
 
+        std::vector<double> _lowPassBeliefs;
+
     public:
         /// Parameters for BP
         struct Properties {
@@ -105,8 +108,10 @@ class BP : public DAIAlgFG {
              *  - SEQFIX sequential updates using a fixed sequence
              *  - SEQRND sequential updates using a random sequence
              *  - SEQMAX maximum-residual updates [\ref EMK06]
+             *  - SEQRNDPAR sequential updates using a random sequence, parallelized with OpenMP. Non-deterministic.
+             *    Hack. Handle with care.
              */
-            DAI_ENUM(UpdateType,SEQFIX,SEQRND,SEQMAX,PARALL);
+            DAI_ENUM(UpdateType,SEQFIX,SEQRND,SEQMAX,PARALL,SEQRNDPAR);
 
             /// Enumeration of inference variants
             /** There are two inference variants:
@@ -220,6 +225,11 @@ class BP : public DAIAlgFG {
         /// Clears history of which messages have been updated
         void clearSentMessages() { _sentMessages.clear(); }
     //@}
+
+        double run(double tolerance, size_t minIters, size_t maxIters, size_t histLength);
+        double newBelief(size_t varIndex) const {
+            return _lowPassBeliefs[varIndex];
+        }
 
     protected:
         /// Returns constant reference to message from the \a _I 'th neighbor of variable \a i to variable \a i

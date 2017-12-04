@@ -31,11 +31,11 @@ else
 endif
 
 # Define build targets
-TARGETS:=lib tests utils examples
+TARGETS:=lib bingo
 ifdef WITH_MATLAB
   TARGETS:=$(TARGETS) matlabs
 endif
-TARGETS:=$(TARGETS) unittests testregression testem
+TARGETS:=$(TARGETS)
 ifdef WITH_DOC
   TARGETS:=$(TARGETS) doc
 endif
@@ -115,6 +115,8 @@ utils : utils/createfg$(EE) utils/fg2dot$(EE) utils/fginfo$(EE) utils/uai2fg$(EE
 
 lib: $(LIB)/libdai$(LE)
 
+bingo: lib
+	$(CC) -std=c++11 -O2 -march=native -Wall -Wextra -Werror -I ./include -lgmp -lgmpxx -fopenmp wrapper.cpp ./lib/libdai.a -o bingo
 
 # OBJECTS
 ##########
@@ -284,6 +286,7 @@ clean :
 	-rm utils/fg2dot$(EE) utils/createfg$(EE) utils/fginfo$(EE) utils/uai2fg$(EE)
 	-rm -R doc
 	-rm -R lib
+	-rm bingo
 else
 clean :
 	-del *.obj
