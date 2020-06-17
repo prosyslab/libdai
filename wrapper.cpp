@@ -123,6 +123,8 @@ int main(int argc, char *argv[]) {
         runBP(SS);
       } else if (CmdType == "O") {
         clamp(SS);
+      } else if (CmdType == "exit") {
+        return 0;
       } else {
         cout << "Invalid command" << endl;
       }
