@@ -89,7 +89,15 @@ int main(int argc, char *argv[]) {
         cerr << __LOGSTR__ << "Insufficient number of arguments." << endl;
         return 1;
     }
-    char *factorGraphFileName = argv[1];
+
+    bool SaveHistory = true;
+    char *factorGraphFileName;
+    if (string(argv[1]) == ("--no-history")) {
+      SaveHistory = false;
+      factorGraphFileName = argv[2];
+    } else {
+      factorGraphFileName = argv[1];
+    }
 
     clog << __LOGSTR__ << "Hello!" << endl
                        << "Bingo compiled on " << __DATE__ << " at " << __TIME__ << "." << endl;
@@ -108,9 +116,10 @@ int main(int argc, char *argv[]) {
     char *line;
     string CmdType;
     while ((line = linenoise("bingo> ")) != NULL) {
-
-      linenoiseHistoryAdd(line);
-      linenoiseHistorySave("history.txt");
+      if (SaveHistory) {
+        linenoiseHistoryAdd(line);
+        linenoiseHistorySave("history.txt");
+      }
       string Line(line);
       stringstream SS(Line);
       SS >> CmdType;
