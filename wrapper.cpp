@@ -58,9 +58,13 @@ void runBP(stringstream &SS) {
   clog << __LOGSTR__ << "BP " << tolerance << " " << minIters << " " << maxIters
        << " " << histLength << endl;
 
-  double yetToConvergeFraction =
+  try {
+    double yetToConvergeFraction =
       bp.run(tolerance, minIters, maxIters, histLength);
-  cout << yetToConvergeFraction << endl;
+    cout << yetToConvergeFraction << endl;
+  } catch (dai::Exception e) {
+    cout << "LIBDAI EXCEPTION" << endl;
+  }
 }
 
 void clamp(stringstream &SS) {
