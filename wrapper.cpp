@@ -62,7 +62,7 @@ void runBP(stringstream &SS) {
     double yetToConvergeFraction =
       bp.run(tolerance, minIters, maxIters, histLength);
     cout << yetToConvergeFraction << endl;
-  } catch (dai::Exception e) {
+  } catch (dai::Exception const &) {
     cout << "LIBDAI EXCEPTION" << endl;
   }
 }
