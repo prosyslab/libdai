@@ -52,6 +52,7 @@ void queryFactor(stringstream &SS) {
 }
 
 void runBP(stringstream &SS) {
+  initBP();
   double tolerance;
   size_t minIters, maxIters, histLength;
   SS >> tolerance >> minIters >> maxIters >> histLength;
@@ -83,7 +84,6 @@ void clamp(stringstream &SS) {
   }
   bool varValue = (varValueStr == "true");
   clamps[varIndex] = varValue;
-  initBP();
   cout << "O " << varIndex << " " << varValueStr << endl;
 }
 
